@@ -5,3 +5,7 @@ keep_vars = true
 
 [placement]
 mode = "smart"
+
+[vars]
+PREFIX = "public"
+SECRET_TOKEN = "OpenWegramBotSecret20260725"
