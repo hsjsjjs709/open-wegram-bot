@@ -94,20 +94,49 @@ export async function handleWebhook(request, ownerUid, botToken, secretToken) {
                 if (!senderUid) {
                     senderUid = rm.inline_keyboard[0][0].url.split('tg://user?id=')[1];
                 }
-// --- 新加的删除逻辑 ---
-      if (message.text === '/del' && message.reply_to_message) {
-        // 删除用户侧的消息（如果能拿到用户消息ID）或管理员发出的消息
+    // === 真正的双向清除逻辑 ===
+    if (message.text === '/del' && message.reply_to_message) {
+      const replyMsg = message.reply_to_message;
+      let targetUserMsgId = null;
+
+      // 1. 从按钮链接中提取用户原始消息的 ID
+      if (replyMsg.reply_markup && replyMsg.reply_markup.inline_keyboard) {
+        const url = replyMsg.reply_markup.inline_keyboard[0][0].url;
+        const msgIdMatch = url.match(/msg_id=(\d+)/);
+        if (msgIdMatch) {
+          targetUserMsgId = parseInt(msgIdMatch[1]);
+        }
+      }
+
+      // 2. 双向删除：删除用户手机里的那条消息
+      if (targetUserMsgId) {
         await postToTelegramApi(botToken, 'deleteMessage', {
           chat_id: parseInt(senderUid),
-          message_id: message.reply_to_message.message_id
+          message_id: targetUserMsgId
         });
+      } else {
+        // 如果没找到按钮里的 ID，退而求其次尝试删除对应编号
         await postToTelegramApi(botToken, 'deleteMessage', {
-          chat_id: message.chat.id,
-          message_id: message.message_id
+          chat_id: parseInt(senderUid),
+          message_id: replyMsg.message_id
         });
-        return new Response('OK');
       }
-      // ---------------------
+
+      // 3. 双向删除：同时把管理群里的中转消息删掉
+      await postToTelegramApi(botToken, 'deleteMessage', {
+        chat_id: message.chat.id,
+        message_id: replyMsg.message_id
+      });
+
+      // 4. 清理管理员发出的 /del 指令本身
+      await postToTelegramApi(botToken, 'deleteMessage', {
+        chat_id: message.chat.id,
+        message_id: message.message_id
+      });
+
+      return new Response('OK');
+    }
+    // ===========================
 
    
 
