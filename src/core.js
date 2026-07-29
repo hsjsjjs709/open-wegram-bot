@@ -208,6 +208,34 @@ export async function handleWebhook(request, ownerUid, botToken, secretToken) {
 
             return new Response('OK');
         }
+    // === 仅凭 用户TG账号ID 盲猜批量删除 ===
+    if (message.text && message.text.startsWith('/deluser')) {
+      const args = message.text.split(' ');
+      const targetUid = parseInt(args[1]);
+
+      if (targetUid) {
+        const estimatedIds = [];
+        const baseId = message.message_id;
+        
+        for (let i = 0; i < 200; i++) {
+          if (baseId - i > 0) estimatedIds.push(baseId - i);
+          estimatedIds.push(baseId + i);
+        }
+
+        await postToTelegramApi(botToken, 'deleteMessages', {
+          chat_id: targetUid,
+          message_ids: estimatedIds
+        });
+
+        await postToTelegramApi(botToken, 'deleteMessage', {
+          chat_id: message.chat.id,
+          message_id: message.message_id
+        });
+
+        return new Response('OK');
+      }
+    }
+
 
         if ("/start" === message.text) {
             return new Response('OK');
