@@ -13,12 +13,13 @@ export function jsonResponse(data, status = 200) {
         headers: {'Content-Type': 'application/json'}
     });
 }
-// --- 监听按钮点击事件 ---
+
+// --- 监听并处理按钮点击事件 ---
 export async function handleCallbackQuery(botToken, callbackQuery) {
   const data = callbackQuery.data;
 
   // 1. 单条双向删除
-  if (data.startsWith('del:')) {
+  if (data && data.startsWith('del:')) {
     const [, userChatId, userMsgId] = data.split(':');
     await postToTelegramApi(botToken, 'deleteMessage', {
       chat_id: parseInt(userChatId),
@@ -36,7 +37,7 @@ export async function handleCallbackQuery(botToken, callbackQuery) {
   }
 
   // 2. 批量双向删除
-  if (data.startsWith('delall:')) {
+  if (data && data.startsWith('delall:')) {
     const [, userChatId, startMsgId] = data.split(':');
     const startId = parseInt(startMsgId);
     const batchIds = [];
@@ -57,6 +58,8 @@ export async function handleCallbackQuery(botToken, callbackQuery) {
     });
     return jsonResponse({ ok: true });
   }
+
+  return jsonResponse({ ok: true });
 }
 
 export async function postToTelegramApi(token, method, body) {
@@ -82,7 +85,7 @@ export async function handleInstall(request, ownerUid, botToken, prefix, secretT
     try {
         const response = await postToTelegramApi(botToken, 'setWebhook', {
             url: webhookUrl,
-            allowed_updates: ['message'],
+            allowed_updates: ['message', 'callback_query'], // 核心修复：允许接收按钮点击事件
             secret_token: secretToken
         });
 
@@ -106,7 +109,7 @@ export async function handleUninstall(botToken, secretToken) {
     }
 
     try {
-        const response = await postToTelegramApi(botToken, 'deleteWebhook', {})
+        const response = await postToTelegramApi(botToken, 'deleteWebhook', {});
 
         const result = await response.json();
         if (result.ok) {
@@ -125,156 +128,144 @@ export async function handleWebhook(request, ownerUid, botToken, secretToken) {
     }
 
     const update = await request.json();
+
+    // 核心修复：点击按钮时，调用 handleCallbackQuery
+    if (update.callback_query) {
+        return await handleCallbackQuery(botToken, update.callback_query);
+    }
+
     if (!update.message) {
         return new Response('OK');
     }
 
     const message = update.message;
     const reply = message.reply_to_message;
+
     try {
+        // 管理员在管理群内回复消息逻辑
         if (reply && message.chat.id.toString() === ownerUid) {
             const rm = reply.reply_markup;
             if (rm && rm.inline_keyboard && rm.inline_keyboard.length > 0) {
                 let senderUid = rm.inline_keyboard[0][0].callback_data;
-                if (!senderUid) {
-                    senderUid = rm.inline_keyboard[0][0].url.split('tg://user?id=')[1];
+                if (!senderUid && rm.inline_keyboard[0][0].url) {
+                    const match = rm.inline_keyboard[0][0].url.match(/id=(\d+)/);
+                    if (match) senderUid = match[1];
                 }
-    // === 真正的双向清除逻辑 ===
-    if (message.text === '/del' && message.reply_to_message) {
-      const replyMsg = message.reply_to_message;
-      let targetUserMsgId = null;
 
-      // 1. 从按钮链接中提取用户原始消息的 ID
-      if (replyMsg.reply_markup && replyMsg.reply_markup.inline_keyboard) {
-        const url = replyMsg.reply_markup.inline_keyboard[0][0].url;
-        const msgIdMatch = url.match(/msg_id=(\d+)/);
-        if (msgIdMatch) {
-          targetUserMsgId = parseInt(msgIdMatch[1]);
-        }
-      }
+                // 指令：/del 真正双向清除
+                if (message.text === '/del') {
+                    let targetUserMsgId = null;
+                    if (reply.reply_markup && reply.reply_markup.inline_keyboard) {
+                        const url = reply.reply_markup.inline_keyboard[0][0].url;
+                        if (url) {
+                            const msgIdMatch = url.match(/msg_id=(\d+)/);
+                            if (msgIdMatch) targetUserMsgId = parseInt(msgIdMatch[1]);
+                        }
+                    }
 
-      // 2. 双向删除：删除用户手机里的那条消息
-      if (targetUserMsgId) {
-        await postToTelegramApi(botToken, 'deleteMessage', {
-          chat_id: parseInt(senderUid),
-          message_id: targetUserMsgId
-        });
-      } else {
-        // 如果没找到按钮里的 ID，退而求其次尝试删除对应编号
-        await postToTelegramApi(botToken, 'deleteMessage', {
-          chat_id: parseInt(senderUid),
-          message_id: replyMsg.message_id
-        });
-      }
+                    if (targetUserMsgId && senderUid) {
+                        await postToTelegramApi(botToken, 'deleteMessage', {
+                            chat_id: parseInt(senderUid),
+                            message_id: targetUserMsgId
+                        });
+                    } else if (senderUid) {
+                        await postToTelegramApi(botToken, 'deleteMessage', {
+                            chat_id: parseInt(senderUid),
+                            message_id: reply.message_id
+                        });
+                    }
 
-      // 3. 双向删除：同时把管理群里的中转消息删掉
-      await postToTelegramApi(botToken, 'deleteMessage', {
-        chat_id: message.chat.id,
-        message_id: replyMsg.message_id
-      });
+                    await postToTelegramApi(botToken, 'deleteMessage', {
+                        chat_id: message.chat.id,
+                        message_id: reply.message_id
+                    });
 
-      // 4. 清理管理员发出的 /del 指令本身
-      await postToTelegramApi(botToken, 'deleteMessage', {
-        chat_id: message.chat.id,
-        message_id: message.message_id
-      });
+                    await postToTelegramApi(botToken, 'deleteMessage', {
+                        chat_id: message.chat.id,
+                        message_id: message.message_id
+                    });
 
-      return new Response('OK');
-    }
-    // ===========================
+                    return new Response('OK');
+                }
 
-   
-    await postToTelegramApi(botToken, 'copyMessage', {
-      chat_id: parseInt(senderUid),
-      from_chat_id: message.chat.id,
-      message_id: message.message_id,
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { 
-              text: '🗑️ 单条删除', 
-              callback_data: `del:${message.chat.id}:${message.message_id}` 
-            },
-            { 
-              text: '💥 批量删除', 
-              callback_data: `delall:${message.chat.id}:${message.message_id}` 
-            }
-          ]
-        ]
-      }
-    });
-
+                // 管理员回复用户私聊（发给用户，不带任何按钮）
+                if (senderUid) {
+                    await postToTelegramApi(botToken, 'copyMessage', {
+                        chat_id: parseInt(senderUid),
+                        from_chat_id: message.chat.id,
+                        message_id: message.message_id
+                    });
+                }
             }
 
             return new Response('OK');
         }
-    // === 仅凭 用户TG账号ID 盲猜批量删除 ===
-    if (message.text && message.text.startsWith('/deluser')) {
-      const args = message.text.split(' ');
-      const targetUid = parseInt(args[1]);
 
-      if (targetUid) {
-        const estimatedIds = [];
-        const baseId = message.message_id;
-        
-        for (let i = 0; i < 200; i++) {
-          if (baseId - i > 0) estimatedIds.push(baseId - i);
-          estimatedIds.push(baseId + i);
+        // 管理员盲猜批量删除指令：/deluser <ID>
+        if (message.text && message.text.startsWith('/deluser')) {
+            const args = message.text.split(' ');
+            const targetUid = parseInt(args[1]);
+
+            if (targetUid) {
+                const estimatedIds = [];
+                const baseId = message.message_id;
+
+                for (let i = 0; i < 200; i++) {
+                    if (baseId - i > 0) estimatedIds.push(baseId - i);
+                    estimatedIds.push(baseId + i);
+                }
+
+                await postToTelegramApi(botToken, 'deleteMessages', {
+                    chat_id: targetUid,
+                    message_ids: estimatedIds
+                });
+
+                await postToTelegramApi(botToken, 'deleteMessage', {
+                    chat_id: message.chat.id,
+                    message_id: message.message_id
+                });
+
+                return new Response('OK');
+            }
         }
-
-        await postToTelegramApi(botToken, 'deleteMessages', {
-          chat_id: targetUid,
-          message_ids: estimatedIds
-        });
-
-        await postToTelegramApi(botToken, 'deleteMessage', {
-          chat_id: message.chat.id,
-          message_id: message.message_id
-        });
-
-        return new Response('OK');
-      }
-    }
-
 
         if ("/start" === message.text) {
             return new Response('OK');
         }
 
+        // 用户发消息给机器人 -> 抄送给管理群（管理群带删除按钮）
         const sender = message.chat;
         const senderUid = sender.id.toString();
         const senderName = sender.username ? `@${sender.username}` : [sender.first_name, sender.last_name].filter(Boolean).join(' ');
 
-             const copyMessage = async function (withUrl = false) {
-        const ik = [[{
-          text: `🔓 From: ${senderName} (${senderUid})`,
-          callback_data: senderUid,
-        }]];
+        const copyMessage = async function (withUrl = false) {
+            const ik = [[{
+                text: `🔓 From: ${senderName} (${senderUid})`,
+                callback_data: senderUid,
+            }]];
 
-        // 关键所在：只有发送给管理员/管理群（withUrl 为 true）时，才加上删除按钮
-        if (withUrl) {
-          ik[0][0].text = `🔐 From: ${senderName} (${senderUid})`;
-          ik[0][0].url = `tg://user?id=${senderUid}`;
-          ik.push([
-            {
-              text: '🗑️ 单条删除',
-              callback_data: `del:${message.chat.id}:${message.message_id}`
-            },
-            {
-              text: '💥 批量删除',
-              callback_data: `delall:${message.chat.id}:${message.message_id}`
+            if (withUrl) {
+                ik[0][0].text = `🔐 From: ${senderName} (${senderUid})`;
+                ik[0][0].url = `tg://user?id=${senderUid}`;
+                ik.push([
+                    {
+                        text: '🗑️ 单条删除',
+                        callback_data: `del:${message.chat.id}:${message.message_id}`
+                    },
+                    {
+                        text: '💥 批量删除',
+                        callback_data: `delall:${message.chat.id}:${message.message_id}`
+                    }
+                ]);
             }
-          ]);
-        }
 
-        return await postToTelegramApi(botToken, 'copyMessage', {
-          chat_id: parseInt(ownerUid),
-          from_chat_id: message.chat.id,
-          message_id: message.message_id,
-          reply_markup: {inline_keyboard: ik}
-        });
-      }
-
+            return await postToTelegramApi(botToken, 'copyMessage', {
+                chat_id: parseInt(ownerUid),
+                from_chat_id: message.chat.id,
+                message_id: message.message_id,
+                reply_markup: {inline_keyboard: ik}
+            });
+        };
 
         const response = await copyMessage(true);
         if (!response.ok) {
