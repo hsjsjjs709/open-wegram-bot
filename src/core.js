@@ -13,6 +13,51 @@ export function jsonResponse(data, status = 200) {
         headers: {'Content-Type': 'application/json'}
     });
 }
+// --- 监听按钮点击事件 ---
+export async function handleCallbackQuery(botToken, callbackQuery) {
+  const data = callbackQuery.data;
+
+  // 1. 单条双向删除
+  if (data.startsWith('del:')) {
+    const [, userChatId, userMsgId] = data.split(':');
+    await postToTelegramApi(botToken, 'deleteMessage', {
+      chat_id: parseInt(userChatId),
+      message_id: parseInt(userMsgId)
+    });
+    await postToTelegramApi(botToken, 'deleteMessage', {
+      chat_id: callbackQuery.message.chat.id,
+      message_id: callbackQuery.message.message_id
+    });
+    await postToTelegramApi(botToken, 'answerCallbackQuery', {
+      callback_query_id: callbackQuery.id,
+      text: '已双向删除！'
+    });
+    return jsonResponse({ ok: true });
+  }
+
+  // 2. 批量双向删除
+  if (data.startsWith('delall:')) {
+    const [, userChatId, startMsgId] = data.split(':');
+    const startId = parseInt(startMsgId);
+    const batchIds = [];
+    for (let i = -50; i <= 50; i++) {
+      if (startId + i > 0) batchIds.push(startId + i);
+    }
+    await postToTelegramApi(botToken, 'deleteMessages', {
+      chat_id: parseInt(userChatId),
+      message_ids: batchIds
+    });
+    await postToTelegramApi(botToken, 'deleteMessage', {
+      chat_id: callbackQuery.message.chat.id,
+      message_id: callbackQuery.message.message_id
+    });
+    await postToTelegramApi(botToken, 'answerCallbackQuery', {
+      callback_query_id: callbackQuery.id,
+      text: '已触发批量删除！'
+    });
+    return jsonResponse({ ok: true });
+  }
+}
 
 export async function postToTelegramApi(token, method, body) {
     return fetch(`https://api.telegram.org/bot${token}/${method}`, {
