@@ -94,9 +94,7 @@ export async function handleWebhook(request, ownerUid, botToken, secretToken) {
                 if (!senderUid) {
                     senderUid = rm.inline_keyboard[0][0].url.split('tg://user?id=')[1];
                 }
-96    }
-97    
-      // --- 新加的删除逻辑 ---
+// --- 新加的删除逻辑 ---
       if (message.text === '/del' && message.reply_to_message) {
         // 删除用户侧的消息（如果能拿到用户消息ID）或管理员发出的消息
         await postToTelegramApi(botToken, 'deleteMessage', {
