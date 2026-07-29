@@ -245,24 +245,36 @@ export async function handleWebhook(request, ownerUid, botToken, secretToken) {
         const senderUid = sender.id.toString();
         const senderName = sender.username ? `@${sender.username}` : [sender.first_name, sender.last_name].filter(Boolean).join(' ');
 
-        const copyMessage = async function (withUrl = false) {
-            const ik = [[{
-                text: `🔏 From: ${senderName} (${senderUid})`,
-                callback_data: senderUid,
-            }]];
+             const copyMessage = async function (withUrl = false) {
+        const ik = [[{
+          text: `🔓 From: ${senderName} (${senderUid})`,
+          callback_data: senderUid,
+        }]];
 
-            if (withUrl) {
-                ik[0][0].text = `🔓 From: ${senderName} (${senderUid})`
-                ik[0][0].url = `tg://user?id=${senderUid}`;
+        // 关键所在：只有发送给管理员/管理群（withUrl 为 true）时，才加上删除按钮
+        if (withUrl) {
+          ik[0][0].text = `🔐 From: ${senderName} (${senderUid})`;
+          ik[0][0].url = `tg://user?id=${senderUid}`;
+          ik.push([
+            {
+              text: '🗑️ 单条删除',
+              callback_data: `del:${message.chat.id}:${message.message_id}`
+            },
+            {
+              text: '💥 批量删除',
+              callback_data: `delall:${message.chat.id}:${message.message_id}`
             }
-
-            return await postToTelegramApi(botToken, 'copyMessage', {
-                chat_id: parseInt(ownerUid),
-                from_chat_id: message.chat.id,
-                message_id: message.message_id,
-                reply_markup: {inline_keyboard: ik}
-            });
+          ]);
         }
+
+        return await postToTelegramApi(botToken, 'copyMessage', {
+          chat_id: parseInt(ownerUid),
+          from_chat_id: message.chat.id,
+          message_id: message.message_id,
+          reply_markup: {inline_keyboard: ik}
+        });
+      }
+
 
         const response = await copyMessage(true);
         if (!response.ok) {
