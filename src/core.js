@@ -109,7 +109,7 @@ export async function handleWebhook(request, ownerUid, botToken, secretToken) {
       }
       // ---------------------
 
-98    await postToTelegramApi(
+   await postToTelegramApi(
 
                 await postToTelegramApi(botToken, 'copyMessage', {
                     chat_id: parseInt(senderUid),
