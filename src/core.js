@@ -184,12 +184,26 @@ export async function handleWebhook(request, ownerUid, botToken, secretToken) {
     // ===========================
 
    
+    await postToTelegramApi(botToken, 'copyMessage', {
+      chat_id: parseInt(senderUid),
+      from_chat_id: message.chat.id,
+      message_id: message.message_id,
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { 
+              text: '🗑️ 单条删除', 
+              callback_data: `del:${message.chat.id}:${message.message_id}` 
+            },
+            { 
+              text: '💥 批量删除', 
+              callback_data: `delall:${message.chat.id}:${message.message_id}` 
+            }
+          ]
+        ]
+      }
+    });
 
-                await postToTelegramApi(botToken, 'copyMessage', {
-                    chat_id: parseInt(senderUid),
-                    from_chat_id: message.chat.id,
-                    message_id: message.message_id
-                });
             }
 
             return new Response('OK');
