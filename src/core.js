@@ -1,5 +1,5 @@
 /**
- * Open Wegram Bot - Core Logic
+ * Open Wegram Bot - Core Logic (Private Chat Optimized)
  */
 
 export function validateSecretToken(token) {
@@ -13,16 +13,17 @@ export function jsonResponse(data, status = 200) {
     });
 }
 
-// 辅助函数：分批调用 deleteMessages（Telegram 限制单次最多 100 条）
+// 辅助函数：分批调用 deleteMessages
 async function batchDeleteUserMessages(botToken, targetChatId, startMsgId) {
-    const start = Math.max(1, startMsgId - 100);
-    const end = startMsgId + 20; // 覆盖后续可能的几条
+    // 盲扫范围：以基准 ID 为中心，前后扫描 300 条
+    const start = Math.max(1, startMsgId - 200);
+    const end = startMsgId + 100;
     const allIds = [];
     for (let id = start; id <= end; id++) {
         allIds.push(id);
     }
 
-    // 分批次，每 90 条发送一次 API 请求
+    // 分批发送（每次 90 条）
     for (let i = 0; i < allIds.length; i += 90) {
         const chunk = allIds.slice(i, i + 90);
         await postToTelegramApi(botToken, 'deleteMessages', {
@@ -43,19 +44,19 @@ export async function handleCallbackQuery(botToken, callbackQuery) {
       const targetChatId = parseInt(parts[1]);
       const targetMsgId = parseInt(parts[2]);
 
-      // 删对方侧消息
+      // 抹掉对方侧消息
       await postToTelegramApi(botToken, 'deleteMessage', {
         chat_id: targetChatId,
         message_id: targetMsgId
       });
-      // 删管理群抄送
+      // 抹掉私聊窗口里发给你的这条中转消息
       await postToTelegramApi(botToken, 'deleteMessage', {
         chat_id: callbackQuery.message.chat.id,
         message_id: callbackQuery.message.message_id
       });
       await postToTelegramApi(botToken, 'answerCallbackQuery', {
         callback_query_id: callbackQuery.id,
-        text: '已单条同步删除！'
+        text: '已同步抹除对方消息！'
       });
       return jsonResponse({ ok: true });
     }
@@ -66,10 +67,9 @@ export async function handleCallbackQuery(botToken, callbackQuery) {
       const targetChatId = parseInt(parts[1]);
       const startMsgId = parseInt(parts[2]);
 
-      // 执行分组批量删除
       await batchDeleteUserMessages(botToken, targetChatId, startMsgId);
 
-      // 删管理群抄送
+      // 抹掉私聊窗口里的这条中转消息
       await postToTelegramApi(botToken, 'deleteMessage', {
         chat_id: callbackQuery.message.chat.id,
         message_id: callbackQuery.message.message_id
@@ -77,7 +77,7 @@ export async function handleCallbackQuery(botToken, callbackQuery) {
 
       await postToTelegramApi(botToken, 'answerCallbackQuery', {
         callback_query_id: callbackQuery.id,
-        text: '已触发批量全扫删除！'
+        text: '已成功批量抹除对方消息！'
       });
       return jsonResponse({ ok: true });
     }
@@ -96,10 +96,7 @@ export async function postToTelegramApi(token, method, body) {
 
 export async function handleInstall(request, ownerUid, botToken, prefix, secretToken) {
     if (!validateSecretToken(secretToken)) {
-        return jsonResponse({
-            success: false,
-            message: 'Secret token must be at least 16 characters and contain uppercase letters, lowercase letters, and numbers.'
-        }, 400);
+        return jsonResponse({ success: false, message: 'Secret token error.' }, 400);
     }
 
     const url = new URL(request.url);
@@ -117,30 +114,19 @@ export async function handleInstall(request, ownerUid, botToken, prefix, secretT
         if (result.ok) {
             return jsonResponse({success: true, message: 'Webhook successfully installed.'});
         }
-
-        return jsonResponse({success: false, message: `Failed to install webhook: ${result.description}`}, 400);
+        return jsonResponse({success: false, message: `Failed: ${result.description}`}, 400);
     } catch (error) {
-        return jsonResponse({success: false, message: `Error installing webhook: ${error.message}`}, 500);
+        return jsonResponse({success: false, message: `Error: ${error.message}`}, 500);
     }
 }
 
 export async function handleUninstall(botToken, secretToken) {
-    if (!validateSecretToken(secretToken)) {
-        return jsonResponse({
-            success: false,
-            message: 'Secret token must be at least 16 characters and contain uppercase letters, lowercase letters, and numbers.'
-        }, 400);
-    }
-
     try {
         const response = await postToTelegramApi(botToken, 'deleteWebhook', {});
         const result = await response.json();
-        if (result.ok) {
-            return jsonResponse({success: true, message: 'Webhook successfully uninstalled.'});
-        }
-        return jsonResponse({success: false, message: `Failed to uninstall webhook: ${result.description}`}, 400);
+        return jsonResponse({success: result.ok});
     } catch (error) {
-        return jsonResponse({success: false, message: `Error uninstalling webhook: ${error.message}`}, 500);
+        return jsonResponse({success: false}, 500);
     }
 }
 
@@ -151,7 +137,7 @@ export async function handleWebhook(request, ownerUid, botToken, secretToken) {
 
     const update = await request.json();
 
-    // 1. 优先捕获按钮点击事件
+    // 1. 优先处理按钮点击
     if (update.callback_query) {
         return await handleCallbackQuery(botToken, update.callback_query);
     }
@@ -161,111 +147,115 @@ export async function handleWebhook(request, ownerUid, botToken, secretToken) {
     }
 
     const message = update.message;
-    const chatIdStr = message.chat.id.toString();
+    // 获取消息发送人的真实 Telegram 数字 ID
+    const senderIdStr = message.from ? message.from.id.toString() : '';
+
+    // 判断发送者是否是你本人（管理员）
+    const isOwner = (senderIdStr === ownerUid);
 
     try {
-        // 2. 独立处理 /deluser 指令（不需要通过 Reply 消息触发）
-        if (chatIdStr === ownerUid && message.text && message.text.startsWith('/deluser')) {
-            const parts = message.text.trim().split(/\s+/);
-            const targetUid = parseInt(parts[1]);
+        // === 2. 管理员（你）在私聊里的操作逻辑 ===
+        if (isOwner) {
 
-            if (targetUid) {
-                // 以当前消息 ID 作为基准推算进行多轮盲扫（扫描最近 300 条消息范围）
-                const baseId = message.message_id + 50; 
-                for (let start = Math.max(1, baseId - 300); start <= baseId; start += 90) {
-                    const chunk = [];
-                    for (let id = start; id < start + 90; id++) {
-                        chunk.push(id);
-                    }
-                    await postToTelegramApi(botToken, 'deleteMessages', {
-                        chat_id: targetUid,
-                        message_ids: chunk
-                    });
-                }
-            }
+            // A. 指令：/deluser <用户ID>（按 ID 批量强删）
+            if (message.text && message.text.startsWith('/deluser')) {
+                const parts = message.text.trim().split(/\s+/);
+                const targetUid = parseInt(parts[1]);
 
-            // 删掉输入的 /deluser 指令本身
-            await postToTelegramApi(botToken, 'deleteMessage', {
-                chat_id: message.chat.id,
-                message_id: message.message_id
-            });
-
-            return new Response('OK');
-        }
-
-        // 3. 管理员在群内回复 (Reply) 消息逻辑
-        const reply = message.reply_to_message;
-        if (reply && chatIdStr === ownerUid) {
-            const rm = reply.reply_markup;
-            if (rm && rm.inline_keyboard && rm.inline_keyboard.length > 0) {
-                let senderUid = rm.inline_keyboard[0][0].callback_data;
-                if (!senderUid && rm.inline_keyboard[0][0].url) {
-                    const match = rm.inline_keyboard[0][0].url.match(/id=(\d+)/);
-                    if (match) senderUid = match[1];
-                }
-
-                // 指令：/del 回复单条抹除
-                if (message.text === '/del') {
-                    let targetUserMsgId = null;
-                    if (reply.reply_markup && reply.reply_markup.inline_keyboard) {
-                        const url = reply.reply_markup.inline_keyboard[0][0].url;
-                        if (url) {
-                            const msgIdMatch = url.match(/msg_id=(\d+)/);
-                            if (msgIdMatch) targetUserMsgId = parseInt(msgIdMatch[1]);
+                if (targetUid) {
+                    // 盲扫目标用户侧最近 300 条消息
+                    const baseId = message.message_id + 50; 
+                    for (let start = Math.max(1, baseId - 300); start <= baseId; start += 90) {
+                        const chunk = [];
+                        for (let id = start; id < start + 90; id++) {
+                            chunk.push(id);
                         }
-                    }
-
-                    if (targetUserMsgId && senderUid) {
-                        await postToTelegramApi(botToken, 'deleteMessage', {
-                            chat_id: parseInt(senderUid),
-                            message_id: targetUserMsgId
+                        await postToTelegramApi(botToken, 'deleteMessages', {
+                            chat_id: targetUid,
+                            message_ids: chunk
                         });
                     }
-
-                    await postToTelegramApi(botToken, 'deleteMessage', {
-                        chat_id: message.chat.id,
-                        message_id: reply.message_id
-                    });
-
-                    await postToTelegramApi(botToken, 'deleteMessage', {
-                        chat_id: message.chat.id,
-                        message_id: message.message_id
-                    });
-
-                    return new Response('OK');
                 }
 
-                // 管理员正常回复文本给用户
-                if (senderUid) {
-                    await postToTelegramApi(botToken, 'copyMessage', {
-                        chat_id: parseInt(senderUid),
-                        from_chat_id: message.chat.id,
-                        message_id: message.message_id
-                    });
-                }
+                // 删掉你发出的 /deluser 指令本身
+                await postToTelegramApi(botToken, 'deleteMessage', {
+                    chat_id: message.chat.id,
+                    message_id: message.message_id
+                });
+
+                return new Response('OK');
             }
+
+            // B. 管理员回复 (Reply) 某条中转消息
+            const reply = message.reply_to_message;
+            if (reply) {
+                const rm = reply.reply_markup;
+                if (rm && rm.inline_keyboard && rm.inline_keyboard.length > 0) {
+                    // 从第一排按钮提取目标用户的 Chat ID
+                    let targetUserUid = null;
+                    const btn = rm.inline_keyboard[0][0];
+                    
+                    if (btn.callback_data) {
+                        targetUserUid = btn.callback_data;
+                    } else if (btn.url) {
+                        const match = btn.url.match(/id=(\d+)/);
+                        if (match) targetUserUid = match[1];
+                    }
+
+                    // 回复 /del 指令：精细删除
+                    if (message.text === '/del') {
+                        if (targetUserUid) {
+                            // 尝试抹除对方私聊框的消息
+                            await postToTelegramApi(botToken, 'deleteMessage', {
+                                chat_id: parseInt(targetUserUid),
+                                message_id: reply.message_id
+                            });
+                        }
+                        // 删掉你私聊框里的中转消息和 /del 指令
+                        await postToTelegramApi(botToken, 'deleteMessage', {
+                            chat_id: message.chat.id,
+                            message_id: reply.message_id
+                        });
+                        await postToTelegramApi(botToken, 'deleteMessage', {
+                            chat_id: message.chat.id,
+                            message_id: message.message_id
+                        });
+                        return new Response('OK');
+                    }
+
+                    // 正常回复文本给对方
+                    if (targetUserUid) {
+                        await postToTelegramApi(botToken, 'copyMessage', {
+                            chat_id: parseInt(targetUserUid),
+                            from_chat_id: message.chat.id,
+                            message_id: message.message_id
+                        });
+                    }
+                }
+                return new Response('OK');
+            }
+
+            // 如果不是指令也不是回复，普通发言直接忽略
             return new Response('OK');
         }
 
-        if ("/start" === message.text) {
-            return new Response('OK');
-        }
+        // === 3. 普通用户发送给机器人的消息 ===
+        if (!isOwner) {
+            if ("/start" === message.text) {
+                return new Response('OK');
+            }
 
-        // 4. 用户发消息 -> 转发管理群（带单条/批量删除按钮）
-        const sender = message.chat;
-        const senderUid = sender.id.toString();
-        const senderName = sender.username ? `@${sender.username}` : [sender.first_name, sender.last_name].filter(Boolean).join(' ');
+            const sender = message.chat;
+            const senderUid = sender.id.toString();
+            const senderName = sender.username ? `@${sender.username}` : [sender.first_name, sender.last_name].filter(Boolean).join(' ');
 
-        const copyMessage = async function (withUrl = false) {
-            const ik = [[{
-                text: `🔓 From: ${senderName} (${senderUid})`,
-                callback_data: senderUid,
-            }]];
-
-            if (withUrl) {
-                ik[0][0].text = `🔐 From: ${senderName} (${senderUid})`;
-                ik[0][0].url = `tg://user?id=${senderUid}`;
-                ik.push([
+            // 转发给你的私聊窗口（带有按钮和 ID）
+            const ik = [
+                [{
+                    text: `🔐 来自: ${senderName} (${senderUid})`,
+                    callback_data: senderUid
+                }],
+                [
                     {
                         text: '🗑️ 单条删除',
                         callback_data: `del:${message.chat.id}:${message.message_id}`
@@ -274,20 +264,15 @@ export async function handleWebhook(request, ownerUid, botToken, secretToken) {
                         text: '💥 批量删除',
                         callback_data: `delall:${message.chat.id}:${message.message_id}`
                     }
-                ]);
-            }
+                ]
+            ];
 
-            return await postToTelegramApi(botToken, 'copyMessage', {
+            await postToTelegramApi(botToken, 'copyMessage', {
                 chat_id: parseInt(ownerUid),
                 from_chat_id: message.chat.id,
                 message_id: message.message_id,
-                reply_markup: {inline_keyboard: ik}
+                reply_markup: { inline_keyboard: ik }
             });
-        };
-
-        const response = await copyMessage(true);
-        if (!response.ok) {
-            await copyMessage();
         }
 
         return new Response('OK');
